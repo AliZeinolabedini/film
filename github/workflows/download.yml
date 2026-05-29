@@ -1,0 +1,88 @@
+name: Download and Split Extractable Archive (7z)
+
+on:
+  workflow_dispatch:
+    inputs:
+      file_url:
+        description: "Direct download URL"
+        required: true
+        type: string
+
+      target_folder:
+        description: "Destination folder inside repo"
+        required: true
+        type: string
+
+      archive_base_name:
+        description: "Archive base name (no extension)"
+        required: true
+        default: "package"
+        type: string
+
+jobs:
+  make-multipart-archive:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install 7zip
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y p7zip-full
+
+      - name: Prepare target folder (clean)
+        run: |
+          F="${{ github.event.inputs.target_folder }}"
+          rm -rf "$F"
+          mkdir -p "$F/in"
+          mkdir -p "$F/out"
+
+      - name: Download file into in/
+        run: |
+          URL="${{ github.event.inputs.file_url }}"
+          F="${{ github.event.inputs.target_folder }}"
+
+          cd "$F/in"
+          # -O: use remote filename, -J: respect Content-Disposition
+          curl -L -OJ "$URL" || curl -L "$URL" -o "source.bin"
+
+          echo "Downloaded:"
+          ls -lh
+
+      - name: Create extractable multi-part 7z (90MB parts) into out/
+        run: |
+          F="${{ github.event.inputs.target_folder }}"
+          NAME="${{ github.event.inputs.archive_base_name }}"
+
+          cd "$F/in"
+
+          # -mx=0 means "store" (no compression). Set -mx=9 if you want compression.
+          7z a -t7z -mx=0 -v90m "../out/${NAME}.7z" ./*
+
+          echo "Archive parts:"
+          ls -lh "../out"
+
+      - name: Replace folder contents with only parts
+        run: |
+          F="${{ github.event.inputs.target_folder }}"
+          rm -rf "$F/in"
+          rm -rf "$F"/*.7z* 2>/dev/null || true
+          mv "$F/out/"* "$F/"
+          rmdir "$F/out"
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add "${{ github.event.inputs.target_folder }}"
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Add multipart archive to ${{ github.event.inputs.target_folder }}"
+            git push
+          fi
